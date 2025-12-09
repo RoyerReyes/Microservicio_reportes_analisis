@@ -16,16 +16,24 @@ def get_ventas_report(periodo):
     """Obtiene el reporte de ventas por día."""
     start_date = get_start_date(periodo)
     db = get_db()
-    cursor = db.cursor(dictionary=True)
-    query = """
+    
+    # Diferencias entre MySQL y SQLite
+    if hasattr(db, 'row_factory') and db.row_factory: # SQLite (configurado en db.py)
+        cursor = db.cursor()
+        placeholder = '?'
+    else: # MySQL
+        cursor = db.cursor(dictionary=True)
+        placeholder = '%s'
+
+    query = f"""
         SELECT DATE(fecha_pedido) as periodo, SUM(total) as total_ventas
         FROM pedidos_pedido
-        WHERE estado = 'COMPLETADO' AND fecha_pedido >= %s
+        WHERE estado = 'COMPLETADO' AND fecha_pedido >= {placeholder}
         GROUP BY DATE(fecha_pedido) ORDER BY periodo;
     """
     try:
         cursor.execute(query, (start_date,))
-        return cursor.fetchall()
+        return [dict(row) for row in cursor.fetchall()] # Normalizar a lista de dicts
     except Exception as e:
         current_app.logger.error(f"Error en get_ventas_report: {e}")
         return []
@@ -36,18 +44,25 @@ def get_productos_mas_vendidos_report(periodo):
     """Obtiene el reporte de los 10 productos más vendidos."""
     start_date = get_start_date(periodo)
     db = get_db()
-    cursor = db.cursor(dictionary=True)
-    query = """
+    
+    if hasattr(db, 'row_factory') and db.row_factory: # SQLite
+        cursor = db.cursor()
+        placeholder = '?'
+    else: # MySQL
+        cursor = db.cursor(dictionary=True)
+        placeholder = '%s'
+
+    query = f"""
         SELECT p.nombre, SUM(dp.cantidad) as total_vendido
         FROM pedidos_detallepedido dp
         JOIN pedidos_producto p ON dp.producto_id = p.id
         JOIN pedidos_pedido pe ON dp.pedido_id = pe.id
-        WHERE pe.estado = 'COMPLETADO' AND pe.fecha_pedido >= %s
+        WHERE pe.estado = 'COMPLETADO' AND pe.fecha_pedido >= {placeholder}
         GROUP BY p.nombre ORDER BY total_vendido DESC LIMIT 10;
     """
     try:
         cursor.execute(query, (start_date,))
-        return cursor.fetchall()
+        return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         current_app.logger.error(f"Error en get_productos_mas_vendidos_report: {e}")
         return []
@@ -58,21 +73,28 @@ def get_pedidos_por_cliente_report(periodo):
     """Obtiene el reporte de la cantidad de pedidos por cliente."""
     start_date = get_start_date(periodo)
     db = get_db()
-    cursor = db.cursor(dictionary=True)
+    
+    if hasattr(db, 'row_factory') and db.row_factory: # SQLite
+        cursor = db.cursor()
+        placeholder = '?'
+    else: # MySQL
+        cursor = db.cursor(dictionary=True)
+        placeholder = '%s'
+
     # El nombre del reporte original era 'pedidos_por_trabajador', lo que era confuso.
     # El query apunta a 'cliente_id' en 'pedidos_pedido' y a 'auth_user', 
     # por lo que 'pedidos_por_cliente' es más preciso.
-    query = """
+    query = f"""
         SELECT u.id, u.username, u.first_name, u.last_name, COUNT(p.id) as cantidad_pedidos
         FROM auth_user u
         JOIN pedidos_pedido p ON u.id = p.cliente_id
-        WHERE p.fecha_pedido >= %s
+        WHERE p.fecha_pedido >= {placeholder}
         GROUP BY u.id, u.username, u.first_name, u.last_name
         ORDER BY cantidad_pedidos DESC;
     """
     try:
         cursor.execute(query, (start_date,))
-        return cursor.fetchall()
+        return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
         current_app.logger.error(f"Error en get_pedidos_por_cliente_report: {e}")
         return []

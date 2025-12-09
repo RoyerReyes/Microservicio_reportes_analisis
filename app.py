@@ -1,61 +1,108 @@
-import os
+from flask import Flask, request, send_file, jsonify
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+import io
 import logging
-from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
+import reports # Importar la lógica de datos existente
+import db
 
-def create_app(testing=False):
-    """Fábrica de la aplicación Flask."""
-    # Cargar variables de entorno
+def create_app():
     load_dotenv()
-
     app = Flask(__name__)
-    app.config['TESTING'] = testing
-
-    # Habilitar CORS
     CORS(app)
-
+    
     # Configurar logging
-    if not app.debug or testing:
-        logging.basicConfig(level=logging.INFO)
-        app.logger.setLevel(logging.INFO)
-
-    # --- Inicialización de la Base de Datos ---
-    import db
+    logging.basicConfig(level=logging.INFO)
+    
     db.init_app_db(app)
-    # Registrar el cleanup de la base de datos
     app.teardown_appcontext(db.close_db)
 
-    # --- Registro de Rutas ---
     @app.route('/health', methods=['GET'])
     def health_check():
-        # En una implementación más avanzada, podríamos verificar la conexión a la BD aquí.
         return jsonify({"status": "ok", "service": "reportes"}), 200
 
     @app.route('/api/reportes', methods=['GET'])
-    def generar_reportes_endpoint():
-        """
-        Endpoint principal que genera y devuelve todos los reportes.
-        Acepta un parámetro 'periodo' en la URL (ej: /api/reportes?periodo=mes).
-        """
+    def get_reportes_json():
         periodo = request.args.get('periodo', 'semana')
-        
-        import reports
         try:
-            reportes = {
+            data = {
                 'ventas': reports.get_ventas_report(periodo),
                 'productos_mas_vendidos': reports.get_productos_mas_vendidos_report(periodo),
                 'pedidos_por_cliente': reports.get_pedidos_por_cliente_report(periodo)
             }
-            return jsonify(reportes)
+            return jsonify(data)
         except Exception as e:
-            app.logger.error(f"Error al generar reportes: {e}")
-            # El error ya fue logueado en la capa de `reports`, pero podemos añadir un log a nivel de API.
-            return jsonify({"error": "Ocurrió un error al generar los reportes."}), 500
+            app.logger.error(f"Error json: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/reportes/export/pdf', methods=['GET'])
+    def export_pdf():
+        periodo = request.args.get('periodo', 'semana')
+        
+        try:
+            # Obtener datos usando la lógica existente
+            ventas = reports.get_ventas_report(periodo)
+            productos = reports.get_productos_mas_vendidos_report(periodo)
+            
+            # Crear buffer en memoria
+            buffer = io.BytesIO()
+            doc = SimpleDocTemplate(buffer, pagesize=letter)
+            elements = []
+            styles = getSampleStyleSheet()
+
+            # Título
+            elements.append(Paragraph(f"Reporte de Ventas - Periodo: {periodo.capitalize()}", styles['Title']))
+            elements.append(Spacer(1, 12))
+
+            # Sección Ventas
+            elements.append(Paragraph("Resumen de Ventas", styles['Heading2']))
+            if sales_data := [['Fecha', 'Total (S/)']] + [[v['periodo'], f"{v['total_ventas']:.2f}"] for v in ventas]:
+                t = Table(sales_data)
+                t.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                elements.append(t)
+            else:
+                elements.append(Paragraph("No hay ventas registradas.", styles['Normal']))
+            
+            elements.append(Spacer(1, 24))
+
+            # Sección Top Productos
+            elements.append(Paragraph("Top Productos", styles['Heading2']))
+            if prod_data := [['Producto', 'Unidades Vendidas']] + [[p['nombre'], p['total_vendido']] for p in productos]:
+                t2 = Table(prod_data)
+                t2.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.blue),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                elements.append(t2)
+            
+            doc.build(elements)
+            buffer.seek(0)
+            
+            return send_file(
+                buffer,
+                as_attachment=True,
+                download_name=f'reporte_{periodo}.pdf',
+                mimetype='application/pdf'
+            )
+
+        except Exception as e:
+            app.logger.error(f"Error PDF: {e}")
+            return jsonify({"error": "Error generando PDF"}), 500
 
     return app
 
 if __name__ == '__main__':
     app = create_app()
-    # Ejecutar en el puerto 5001
     app.run(debug=True, port=5001)
